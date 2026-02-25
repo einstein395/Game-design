@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Maze Game — Level 1</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            background: #1a1a2e;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            color: #e0e0e0;
+        }
+
+        h1 {
+            margin-bottom: 10px;
+            font-size: 2rem;
+            color: #e94560;
+        }
+
+        .instructions {
+            margin-bottom: 20px;
+            font-size: 0.95rem;
+            color: #a0a0b0;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(3, 120px);
+            grid-template-rows: repeat(3, 120px);
+            gap: 4px;
+            background: #16213e;
+            padding: 4px;
+            border-radius: 8px;
+        }
+
+        .cell {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 6px;
+            font-size: 1.4rem;
+            font-weight: bold;
+            transition: background 0.15s;
+        }
+
+        .cell.open {
+            background: #0f3460;
+        }
+
+        .cell.wall {
+            background: #2c2c3a;
+            box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.5);
+        }
+
+        .cell.start {
+            background: #1b998b;
+        }
+
+        .cell.end {
+            background: #e94560;
+        }
+
+        .cell.player {
+            background: #f5a623;
+            box-shadow: 0 0 15px rgba(245, 166, 35, 0.6);
+        }
+
+        #message {
+            margin-top: 20px;
+            font-size: 1.3rem;
+            min-height: 2rem;
+            color: #1b998b;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <h1>Maze — Level 1</h1>
+    <p class="instructions">Use arrow keys to move from <strong style="color:#1b998b">A</strong> to <strong style="color:#e94560">B</strong></p>
+    <div class="grid" id="grid"></div>
+    <p id="message"></p>
+
+    <script>
+        // 0 = open, 1 = wall
+        const maze = [
+            [0, 0, 0],
+            [1, 0, 1],
+            [0, 0, 0]
+        ];
+
+        const start = { row: 0, col: 0 };
+        const end = { row: 2, col: 2 };
+        const player = { row: start.row, col: start.col };
+        let won = false;
+
+        function render() {
+            const grid = document.getElementById('grid');
+            grid.innerHTML = '';
+
+            for (let r = 0; r < 3; r++) {
+                for (let c = 0; c < 3; c++) {
+                    const cell = document.createElement('div');
+                    cell.classList.add('cell');
+
+                    if (player.row === r && player.col === c) {
+                        cell.classList.add('player');
+                        cell.textContent = '\u25CF';
+                    } else if (maze[r][c] === 1) {
+                        cell.classList.add('wall');
+                        cell.textContent = '\u2588';
+                    } else if (r === start.row && c === start.col) {
+                        cell.classList.add('start');
+                        cell.textContent = 'A';
+                    } else if (r === end.row && c === end.col) {
+                        cell.classList.add('end');
+                        cell.textContent = 'B';
+                    } else {
+                        cell.classList.add('open');
+                    }
+
+                    grid.appendChild(cell);
+                }
+            }
+        }
+
+        document.addEventListener('keydown', (e) => {
+            if (won) return;
+
+            let newRow = player.row;
+            let newCol = player.col;
+
+            switch (e.key) {
+                case 'ArrowUp':    newRow--; break;
+                case 'ArrowDown':  newRow++; break;
+                case 'ArrowLeft':  newCol--; break;
+                case 'ArrowRight': newCol++; break;
+                default: return;
+            }
+
+            e.preventDefault();
+
+            // Boundary check
+            if (newRow < 0 || newRow > 2 || newCol < 0 || newCol > 2) return;
+            // Wall check
+            if (maze[newRow][newCol] === 1) return;
+
+            player.row = newRow;
+            player.col = newCol;
+            render();
+
+            if (player.row === end.row && player.col === end.col) {
+                won = true;
+                document.getElementById('message').textContent = 'You win! Level 1 complete!';
+            }
+        });
+
+        render();
+    </script>
+</body>
+</html>
