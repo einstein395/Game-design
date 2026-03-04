@@ -346,6 +346,52 @@
         }
 
         .action-btn.hidden { display: none; }
+
+        /* ── SCOREBOARD ── */
+        .score-strip {
+            display: flex;
+            align-items: center;
+            gap: 0;
+            border: 1px solid #1a1a30;
+            border-radius: 6px;
+            overflow: hidden;
+            background: #0a0a1a;
+        }
+
+        .score-block {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 10px 28px;
+            gap: 4px;
+        }
+
+        .score-block.p1 { border-right: 1px solid #1a1a30; }
+        .score-block.draws { border-right: 1px solid #1a1a30; }
+
+        .score-title {
+            font-size: 0.55rem;
+            letter-spacing: 3px;
+            color: #555577;
+            text-transform: uppercase;
+        }
+
+        .score-val {
+            font-size: 1.6rem;
+            font-weight: 900;
+            line-height: 1;
+        }
+
+        .score-val.p1 { color: #ff0066; text-shadow: 0 0 10px rgba(255,0,102,0.5); }
+        .score-val.p2 { color: #0cf;    text-shadow: 0 0 10px rgba(0,200,255,0.5); }
+        .score-val.draws { color: #7800ff; text-shadow: 0 0 10px rgba(120,0,255,0.4); }
+
+        .score-rounds {
+            font-size: 0.55rem;
+            letter-spacing: 2px;
+            color: #333355;
+            text-transform: uppercase;
+        }
     </style>
 </head>
 <body>
@@ -383,6 +429,25 @@
     <!-- GAME SCREEN -->
     <div id="game">
         <h1>Tic Tac Toe</h1>
+
+        <!-- Win tracker -->
+        <div class="score-strip">
+            <div class="score-block p1">
+                <div class="score-title" id="scoreLabel1">Player 1</div>
+                <div class="score-val p1" id="scoreVal1">0</div>
+                <div class="score-rounds" id="scoreRounds1"></div>
+            </div>
+            <div class="score-block draws">
+                <div class="score-title">Draws</div>
+                <div class="score-val draws" id="scoreDraws">0</div>
+                <div class="score-rounds" id="scoreRoundsTotal">0 rounds</div>
+            </div>
+            <div class="score-block p2">
+                <div class="score-title" id="scoreLabel2">Player 2</div>
+                <div class="score-val p2" id="scoreVal2">0</div>
+                <div class="score-rounds" id="scoreRounds2"></div>
+            </div>
+        </div>
 
         <div class="scoreboard">
             <div class="player-card active" id="card1">
@@ -434,6 +499,9 @@
     let currentPlayer = 1;         // 1 or 2
     let chances = [3, 3];          // [p1 remaining, p2 remaining]
     let gameOver = false;
+    let wins = [0, 0];             // [p1 wins, p2 wins]
+    let draws = 0;
+    let rounds = 0;
 
     // ── Setup ──
     function pick(player, symbol) {
@@ -468,10 +536,24 @@
         }
     }
 
+    // ── Scoreboard ──
+    function updateScoreboard() {
+        document.getElementById('scoreVal1').textContent = wins[0];
+        document.getElementById('scoreVal2').textContent = wins[1];
+        document.getElementById('scoreDraws').textContent = draws;
+        document.getElementById('scoreRoundsTotal').textContent = rounds + ' round' + (rounds === 1 ? '' : 's');
+        document.getElementById('scoreLabel1').textContent = 'Player 1 (' + p1Symbol + ')';
+        document.getElementById('scoreLabel2').textContent = 'Player 2 (' + p2Symbol + ')';
+    }
+
     // ── Game start ──
     function startGame() {
         document.getElementById('setup').style.display = 'none';
         document.getElementById('game').style.display = 'flex';
+
+        wins = [0, 0];
+        draws = 0;
+        rounds = 0;
 
         board = Array(9).fill(null);
         currentPlayer = 1;
@@ -490,6 +572,7 @@
         renderPips();
         renderBoard();
         updateCards();
+        updateScoreboard();
         setStatus("Player 1's turn");
     }
 
@@ -566,7 +649,10 @@
         const winLine = checkWin(sym);
         if (winLine) {
             gameOver = true;
+            rounds++;
+            wins[currentPlayer - 1]++;
             highlightWin(winLine);
+            updateScoreboard();
             setStatus('Player ' + currentPlayer + ' wins!', 'win');
             showEndButtons();
             return;
@@ -575,6 +661,9 @@
         // Check draw (both out of chances OR board full with no winner)
         if (chances[0] === 0 && chances[1] === 0) {
             gameOver = true;
+            rounds++;
+            draws++;
+            updateScoreboard();
             setStatus("It's a draw!", 'draw');
             showEndButtons();
             return;
@@ -583,8 +672,10 @@
         // Switch player — skip if next player has no chances left
         const next = currentPlayer === 1 ? 2 : 1;
         if (chances[next - 1] === 0) {
-            // Other player still has chances (shouldn't normally happen simultaneously)
             gameOver = true;
+            rounds++;
+            draws++;
+            updateScoreboard();
             setStatus("It's a draw!", 'draw');
             showEndButtons();
             return;
@@ -607,7 +698,7 @@
         document.getElementById('newGameBtn').classList.remove('hidden');
     }
 
-    // ── Replay with same symbols ──
+    // ── Replay with same symbols (scores persist) ──
     function playAgain() {
         board = Array(9).fill(null);
         currentPlayer = 1;
