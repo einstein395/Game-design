@@ -347,6 +347,59 @@
 
         .action-btn.hidden { display: none; }
 
+        /* ── TURN TIMER ── */
+        .timer-wrap {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            width: 68px;
+            height: 68px;
+        }
+
+        .timer-svg {
+            position: absolute;
+            top: 0; left: 0;
+            transform: rotate(-90deg);
+        }
+
+        .timer-track {
+            fill: none;
+            stroke: #1a1a30;
+            stroke-width: 4;
+        }
+
+        .timer-bar {
+            fill: none;
+            stroke: #0cf;
+            stroke-width: 4;
+            stroke-linecap: round;
+            transition: stroke-dashoffset 1s linear, stroke 0.3s;
+        }
+
+        .timer-bar.warning { stroke: #ff0066; }
+
+        .timer-num {
+            font-size: 1.3rem;
+            font-weight: 900;
+            color: #0cf;
+            text-shadow: 0 0 8px rgba(0,200,255,0.5);
+            position: relative;
+            z-index: 1;
+            transition: color 0.3s, text-shadow 0.3s;
+        }
+
+        .timer-num.warning {
+            color: #ff0066;
+            text-shadow: 0 0 8px rgba(255,0,102,0.6);
+            animation: timerPulse 0.5s ease-in-out infinite alternate;
+        }
+
+        @keyframes timerPulse {
+            from { opacity: 1; }
+            to   { opacity: 0.4; }
+        }
+
         /* ── SCOREBOARD ── */
         .score-strip {
             display: flex;
@@ -430,6 +483,16 @@
     <div id="game">
         <h1>Tic Tac Toe</h1>
 
+        <!-- Per-turn countdown -->
+        <div class="timer-wrap">
+            <svg class="timer-svg" width="68" height="68" viewBox="0 0 68 68">
+                <circle class="timer-track" cx="34" cy="34" r="28"/>
+                <circle class="timer-bar" id="timerBar" cx="34" cy="34" r="28"
+                    stroke-dasharray="175.9" stroke-dashoffset="0"/>
+            </svg>
+            <span class="timer-num" id="timerNum">30</span>
+        </div>
+
         <!-- Win tracker -->
         <div class="score-strip">
             <div class="score-block p1">
@@ -481,10 +544,7 @@
 
         <p id="status">Player 1's turn</p>
 
-        <div style="display:flex;gap:14px;">
-            <button class="action-btn hidden" id="playAgainBtn" onclick="playAgain()">Play Again</button>
-            <button class="action-btn hidden" id="newGameBtn" onclick="newGame()">New Game</button>
-        </div>
+        <button class="action-btn hidden" id="newGameBtn" onclick="newGame()">New Game</button>
     </div>
 
 <script>
@@ -502,6 +562,10 @@
     let wins = [0, 0];             // [p1 wins, p2 wins]
     let draws = 0;
     let rounds = 0;
+    const TURN_TIME = 30;          // seconds per turn
+    const CIRCUMFERENCE = 175.9;   // 2 * π * 28
+    let timerInterval = null;
+    let timeLeft = TURN_TIME;
 
     // ── Setup ──
     function pick(player, symbol) {
@@ -574,6 +638,7 @@
         updateCards();
         updateScoreboard();
         setStatus("Player 1's turn");
+        startTurnTimer();
     }
 
     // ── Board rendering ──
@@ -622,6 +687,50 @@
         c2.className = 'player-card' + (currentPlayer === 2 ? (' active' + (p2Symbol === 'X' ? ' x-active' : '')) : '');
     }
 
+    // ── Turn Timer ──
+    function startTurnTimer() {
+        clearInterval(timerInterval);
+        timeLeft = TURN_TIME;
+        renderTimer();
+
+        timerInterval = setInterval(() => {
+            timeLeft--;
+            renderTimer();
+            if (timeLeft <= 0) {
+                clearInterval(timerInterval);
+                timeExpired();
+            }
+        }, 1000);
+    }
+
+    function stopTimer() {
+        clearInterval(timerInterval);
+        timerInterval = null;
+        // Hide ring
+        document.getElementById('timerBar').style.strokeDashoffset = CIRCUMFERENCE;
+        document.getElementById('timerNum').textContent = '';
+        document.getElementById('timerNum').classList.remove('warning');
+        document.getElementById('timerBar').classList.remove('warning');
+    }
+
+    function renderTimer() {
+        const bar = document.getElementById('timerBar');
+        const num = document.getElementById('timerNum');
+        const offset = CIRCUMFERENCE * (1 - timeLeft / TURN_TIME);
+        bar.style.strokeDashoffset = offset;
+        num.textContent = timeLeft;
+        const warn = timeLeft <= 5;
+        bar.classList.toggle('warning', warn);
+        num.classList.toggle('warning', warn);
+    }
+
+    function timeExpired() {
+        if (gameOver) return;
+        gameOver = true;
+        setStatus("Time's up! Game over.", 'draw');
+        showEndButtons();
+    }
+
     // ── Status ──
     function setStatus(msg, type) {
         const el = document.getElementById('status');
@@ -649,6 +758,7 @@
         const winLine = checkWin(sym);
         if (winLine) {
             gameOver = true;
+            stopTimer();
             rounds++;
             wins[currentPlayer - 1]++;
             highlightWin(winLine);
@@ -661,6 +771,7 @@
         // Check draw (both out of chances OR board full with no winner)
         if (chances[0] === 0 && chances[1] === 0) {
             gameOver = true;
+            stopTimer();
             rounds++;
             draws++;
             updateScoreboard();
@@ -673,6 +784,7 @@
         const next = currentPlayer === 1 ? 2 : 1;
         if (chances[next - 1] === 0) {
             gameOver = true;
+            stopTimer();
             rounds++;
             draws++;
             updateScoreboard();
@@ -684,6 +796,7 @@
         currentPlayer = next;
         updateCards();
         setStatus('Player ' + currentPlayer + "'s turn");
+        startTurnTimer();
     }
 
     function checkWin(sym) {
@@ -694,28 +807,12 @@
     }
 
     function showEndButtons() {
-        document.getElementById('playAgainBtn').classList.remove('hidden');
         document.getElementById('newGameBtn').classList.remove('hidden');
-    }
-
-    // ── Replay with same symbols (scores persist) ──
-    function playAgain() {
-        board = Array(9).fill(null);
-        currentPlayer = 1;
-        chances = [3, 3];
-        gameOver = false;
-
-        document.getElementById('playAgainBtn').classList.add('hidden');
-        document.getElementById('newGameBtn').classList.add('hidden');
-
-        renderPips();
-        renderBoard();
-        updateCards();
-        setStatus("Player 1's turn");
     }
 
     // ── Back to setup ──
     function newGame() {
+        stopTimer();
         p1Symbol = null;
         p2Symbol = null;
 
@@ -727,7 +824,6 @@
         });
         document.getElementById('startBtn').classList.remove('ready');
 
-        document.getElementById('playAgainBtn').classList.add('hidden');
         document.getElementById('newGameBtn').classList.add('hidden');
 
         document.getElementById('game').style.display = 'none';
