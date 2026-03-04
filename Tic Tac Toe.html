@@ -374,7 +374,7 @@
             stroke: #0cf;
             stroke-width: 4;
             stroke-linecap: round;
-            transition: stroke-dashoffset 1s linear, stroke 0.3s;
+            transition: stroke 0.3s;
         }
 
         .timer-bar.warning { stroke: #ff0066; }
@@ -564,8 +564,8 @@
     let rounds = 0;
     const TURN_TIME = 30;          // seconds per turn
     const CIRCUMFERENCE = 175.9;   // 2 * π * 28
-    let timerInterval = null;
-    let timeLeft = TURN_TIME;
+    let timerRAF = null;
+    let timerStart = null;
 
     // ── Setup ──
     function pick(player, symbol) {
@@ -689,37 +689,39 @@
 
     // ── Turn Timer ──
     function startTurnTimer() {
-        clearInterval(timerInterval);
-        timeLeft = TURN_TIME;
-        renderTimer();
+        cancelAnimationFrame(timerRAF);
+        timerStart = performance.now();
 
-        timerInterval = setInterval(() => {
-            timeLeft--;
-            renderTimer();
-            if (timeLeft <= 0) {
-                clearInterval(timerInterval);
+        function tick(now) {
+            const elapsed = (now - timerStart) / 1000;
+            const remaining = Math.max(0, TURN_TIME - elapsed);
+            renderTimer(remaining);
+            if (remaining <= 0) {
                 timeExpired();
+                return;
             }
-        }, 1000);
+            timerRAF = requestAnimationFrame(tick);
+        }
+        timerRAF = requestAnimationFrame(tick);
     }
 
     function stopTimer() {
-        clearInterval(timerInterval);
-        timerInterval = null;
-        // Hide ring
+        cancelAnimationFrame(timerRAF);
+        timerRAF = null;
+        timerStart = null;
         document.getElementById('timerBar').style.strokeDashoffset = CIRCUMFERENCE;
         document.getElementById('timerNum').textContent = '';
         document.getElementById('timerNum').classList.remove('warning');
         document.getElementById('timerBar').classList.remove('warning');
     }
 
-    function renderTimer() {
+    function renderTimer(remaining) {
         const bar = document.getElementById('timerBar');
         const num = document.getElementById('timerNum');
-        const offset = CIRCUMFERENCE * (1 - timeLeft / TURN_TIME);
+        const offset = CIRCUMFERENCE * (1 - remaining / TURN_TIME);
         bar.style.strokeDashoffset = offset;
-        num.textContent = timeLeft;
-        const warn = timeLeft <= 5;
+        num.textContent = Math.ceil(remaining);
+        const warn = remaining <= 10;
         bar.classList.toggle('warning', warn);
         num.classList.toggle('warning', warn);
     }
