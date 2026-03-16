@@ -1,0 +1,1402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>The Jackal &amp; The Drum — Panchatantra</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    background:#0a0a0a;
+    display:flex; align-items:center; justify-content:center;
+    min-height:100vh; overflow:hidden;
+    touch-action:none; user-select:none; font-family:monospace;
+  }
+  #wrap { position:relative; }
+  canvas { display:block; }
+
+  #controls {
+    display:none; position:absolute;
+    bottom:0; left:0; right:0; height:130px;
+    pointer-events:none;
+  }
+  .dpad {
+    position:absolute; left:16px; bottom:14px;
+    width:130px; height:110px; pointer-events:all;
+  }
+  .dpad button {
+    position:absolute; width:38px; height:38px; font-size:16px;
+    background:rgba(255,255,255,0.13); border:2px solid rgba(255,255,255,0.25);
+    border-radius:8px; color:#fff; cursor:pointer; outline:none;
+    -webkit-tap-highlight-color:transparent;
+  }
+  #btn-up    { top:0;    left:46px; }
+  #btn-down  { bottom:0; left:46px; }
+  #btn-left  { top:36px; left:0;    }
+  #btn-right { top:36px; right:0;   }
+  .jump-btn {
+    position:absolute; right:16px; bottom:14px; pointer-events:all;
+  }
+  .jump-btn button {
+    width:80px; height:80px; border-radius:50%;
+    background:rgba(240,210,50,0.15); border:2px solid rgba(240,210,50,0.4);
+    color:#f0d232; font-size:13px; font-weight:bold; cursor:pointer;
+    outline:none; -webkit-tap-highlight-color:transparent;
+  }
+  button:active { filter:brightness(1.6); }
+  @media (max-width:900px) { #controls { display:block; } }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c"></canvas>
+  <div id="controls">
+    <div class="dpad">
+      <button id="btn-up">▲</button>
+      <button id="btn-left">◀</button>
+      <button id="btn-right">▶</button>
+      <button id="btn-down">▼</button>
+    </div>
+    <div class="jump-btn"><button id="btn-jump">JUMP<br>⬆</button></div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+//  CONSTANTS
+// ═══════════════════════════════════════════════════════════════
+const TILE = 40, COLS = 22, ROWS = 14;
+const MAP_W = COLS * TILE, MAP_H = ROWS * TILE;
+const HUD_H = 120, W = MAP_W, H = MAP_H + HUD_H;
+const MCX = 10, MCY = 6;           // maze cell grid  (10 × 6)
+const DRUM_TX = MCX*2-1;           // drum tile col = 19
+const DRUM_TY = MCY*2-1;           // drum tile row = 11
+
+const OPEN=0, WALL=1;
+const OBS_NONE=0, OBS_CHARIOT=1, OBS_BOW=2, OBS_SWORD=3;
+
+// ═══════════════════════════════════════════════════════════════
+//  CANVAS + RESIZE
+// ═══════════════════════════════════════════════════════════════
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+
+function resize() {
+  const s = Math.min(window.innerWidth/W, window.innerHeight/H);
+  canvas.width = W; canvas.height = H;
+  canvas.style.width  = (W*s)+'px';
+  canvas.style.height = (H*s)+'px';
+  document.getElementById('wrap').style.cssText =
+    `width:${W*s}px;height:${H*s}px;position:relative`;
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ═══════════════════════════════════════════════════════════════
+//  INPUT
+// ═══════════════════════════════════════════════════════════════
+const keys = {};
+document.addEventListener('keydown', e => {
+  keys[e.key] = true;
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key))
+    e.preventDefault();
+});
+document.addEventListener('keyup', e => { keys[e.key] = false; });
+
+function bindBtn(id, k) {
+  const el = document.getElementById(id); if (!el) return;
+  el.addEventListener('pointerdown',  () => keys[k] = true);
+  el.addEventListener('pointerup',    () => keys[k] = false);
+  el.addEventListener('pointerleave', () => keys[k] = false);
+}
+bindBtn('btn-up',    'ArrowUp');
+bindBtn('btn-down',  'ArrowDown');
+bindBtn('btn-left',  'ArrowLeft');
+bindBtn('btn-right', 'ArrowRight');
+bindBtn('btn-jump',  ' ');
+
+// ═══════════════════════════════════════════════════════════════
+//  UTILITIES
+// ═══════════════════════════════════════════════════════════════
+const rnd   = (a,b)    => a + Math.random()*(b-a);
+const rndi  = (a,b)    => Math.floor(rnd(a,b+1));
+const hyp   = (dx,dy)  => Math.sqrt(dx*dx+dy*dy);
+const clamp = (v,lo,hi)=> Math.max(lo,Math.min(hi,v));
+
+function shuffle(arr) {
+  const a=[...arr];
+  for (let i=a.length-1;i>0;i--){const j=rndi(0,i);[a[i],a[j]]=[a[j],a[i]];}
+  return a;
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  FIELD  (open battlefield with randomly placed obstacles)
+// ═══════════════════════════════════════════════════════════════
+function buildMaze() {
+  const grid = Array.from({length:ROWS}, ()=> new Uint8Array(COLS)); // all OPEN
+  const obs  = Array.from({length:ROWS}, ()=> new Uint8Array(COLS));
+
+  const types = [OBS_CHARIOT, OBS_BOW, OBS_SWORD,
+                 OBS_CHARIOT, OBS_BOW, OBS_SWORD,
+                 OBS_CHARIOT, OBS_BOW, OBS_SWORD,
+                 OBS_BOW,     OBS_SWORD, OBS_CHARIOT];
+  let placed = 0, attempts = 0;
+  while (placed < types.length && attempts < 1000) {
+    attempts++;
+    const c = rndi(3, COLS-3);
+    const r = rndi(3, ROWS-3);
+    if (c < 5 && r < 5) continue;                      // near start
+    if (c > DRUM_TX-3 && r > DRUM_TY-3) continue;      // near drum
+    if (obs[r][c] !== OBS_NONE) continue;               // already occupied
+    obs[r][c] = types[placed++];
+  }
+
+  return { grid, obs };
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  SIGNAL COMPUTATION
+// ═══════════════════════════════════════════════════════════════
+function computeSignal(jx, jy, listening) {
+  const ex=DRUM_TX-jx, ey=DRUM_TY-jy;
+  const dist = hyp(ex, ey);
+  const deg  = (90 - Math.atan2(-ey, ex)*180/Math.PI + 360) % 360;
+  const noise = listening ? 5 : 20;
+  const dir   = (deg + rnd(-noise, noise) + 360) % 360;
+  const maxD  = hyp(COLS, ROWS);
+  const vol   = Math.max(0, 1 - dist/maxD)**0.5;
+  const clar  = clamp((1 - (dist/maxD)*1.2) * (listening ? 1.5 : 1), 0, 1);
+  return { dir, volume:vol, clarity:clar };
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  OBSTACLE DRAWING
+// ═══════════════════════════════════════════════════════════════
+function drawChariot(px, py) {
+  // Wheels
+  for (const wx of [px+9, px+TILE-9]) {
+    ctx.strokeStyle='#3A1E06'; ctx.lineWidth=3;
+    ctx.beginPath(); ctx.arc(wx, py+TILE-9, 8, 0, Math.PI*2); ctx.stroke();
+    ctx.strokeStyle='#5C3010'; ctx.lineWidth=1.5;
+    for (let s=0; s<4; s++) {
+      const a=s*Math.PI/2;
+      ctx.beginPath();
+      ctx.moveTo(wx, py+TILE-9);
+      ctx.lineTo(wx+Math.cos(a)*7, py+TILE-9+Math.sin(a)*7);
+      ctx.stroke();
+    }
+  }
+  // Axle
+  ctx.strokeStyle='#5C3010'; ctx.lineWidth=3;
+  ctx.beginPath(); ctx.moveTo(px+1,py+TILE-9); ctx.lineTo(px+TILE-1,py+TILE-9); ctx.stroke();
+  // Body
+  ctx.fillStyle='#8B5A1A';
+  ctx.fillRect(px+5, py+8, TILE-10, TILE-22);
+  ctx.strokeStyle='#5C3010'; ctx.lineWidth=2; ctx.strokeRect(px+5,py+8,TILE-10,TILE-22);
+  // Front panel decoration
+  ctx.fillStyle='#A07030';
+  ctx.fillRect(px+7, py+10, TILE-14, 5);
+  // Pole
+  ctx.strokeStyle='#7B4A10'; ctx.lineWidth=3; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(px+TILE/2,py+8); ctx.lineTo(px+TILE/2,py+1); ctx.stroke();
+}
+
+function drawBow(px, py) {
+  const cx=px+TILE/2, cy=py+TILE/2;
+  // Stave
+  ctx.strokeStyle='#8B6020'; ctx.lineWidth=4; ctx.lineCap='round';
+  ctx.beginPath(); ctx.arc(cx-2, cy, 15, -0.65, 0.65); ctx.stroke();
+  // String
+  const ys = 15*Math.sin(0.65);
+  ctx.strokeStyle='#ddd'; ctx.lineWidth=1.5;
+  ctx.beginPath();
+  ctx.moveTo(cx-2+15*Math.cos(0.65), cy-ys);
+  ctx.lineTo(cx+11, cy);
+  ctx.lineTo(cx-2+15*Math.cos(0.65), cy+ys);
+  ctx.stroke();
+  // Arrow shaft
+  ctx.strokeStyle='#7B4A10'; ctx.lineWidth=2.5;
+  ctx.beginPath(); ctx.moveTo(px+5,cy+5); ctx.lineTo(px+TILE-6,cy+5); ctx.stroke();
+  // Head
+  ctx.fillStyle='#bbb';
+  ctx.beginPath();
+  ctx.moveTo(px+TILE-4,cy+5); ctx.lineTo(px+TILE-12,cy+1); ctx.lineTo(px+TILE-12,cy+9);
+  ctx.closePath(); ctx.fill();
+  // Fletching
+  ctx.strokeStyle='#e07030'; ctx.lineWidth=1.5;
+  ctx.beginPath(); ctx.moveTo(px+9,cy+5); ctx.lineTo(px+5,cy+1); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(px+9,cy+5); ctx.lineTo(px+5,cy+9); ctx.stroke();
+}
+
+function drawSword(px, py) {
+  const cx=px+TILE/2;
+  // Blade
+  ctx.fillStyle='#C8C8D8';
+  ctx.fillRect(cx-3, py+4, 6, TILE-16);
+  ctx.fillStyle='#E8E8F8';
+  ctx.fillRect(cx-1, py+4, 2, TILE-20);
+  // Tip
+  ctx.fillStyle='#C8C8D8';
+  ctx.beginPath();
+  ctx.moveTo(cx-3,py+TILE-12); ctx.lineTo(cx+3,py+TILE-12); ctx.lineTo(cx,py+TILE-5);
+  ctx.closePath(); ctx.fill();
+  // Guard
+  ctx.fillStyle='#C8A820';
+  ctx.fillRect(cx-11, py+TILE/2-3, 22, 6);
+  ctx.strokeStyle='#906010'; ctx.lineWidth=1; ctx.strokeRect(cx-11,py+TILE/2-3,22,6);
+  // Handle
+  ctx.fillStyle='#6B3A10';
+  ctx.fillRect(cx-3, py+TILE/2+3, 6, 10);
+  ctx.strokeStyle='#D4A040'; ctx.lineWidth=1;
+  for (let i=0;i<3;i++) {
+    ctx.beginPath();
+    ctx.moveTo(cx-3,py+TILE/2+5+i*3); ctx.lineTo(cx+3,py+TILE/2+5+i*3); ctx.stroke();
+  }
+  // Pommel
+  ctx.fillStyle='#C8A820';
+  ctx.beginPath(); ctx.arc(cx, py+TILE-4, 5, 0, Math.PI*2); ctx.fill();
+  ctx.strokeStyle='#906010'; ctx.lineWidth=1; ctx.stroke();
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  DRUM
+// ═══════════════════════════════════════════════════════════════
+function drawDrum(pulse, showFood, winTimer) {
+  const px=DRUM_TX*TILE, py=DRUM_TY*TILE;
+  const sc=1+pulse*0.07;
+
+  ctx.save();
+  ctx.translate(px+TILE/2, py+TILE/2);
+  ctx.scale(sc,sc);
+  ctx.translate(-(px+TILE/2), -(py+TILE/2));
+
+  // Glow
+  const grd=ctx.createRadialGradient(px+TILE/2,py+TILE/2,2, px+TILE/2,py+TILE/2,34);
+  grd.addColorStop(0,`rgba(220,160,60,${0.3+pulse*0.5})`);
+  grd.addColorStop(1,'rgba(220,160,60,0)');
+  ctx.fillStyle=grd;
+  ctx.beginPath(); ctx.arc(px+TILE/2,py+TILE/2,34,0,Math.PI*2); ctx.fill();
+
+  if (showFood) {
+    // Drum tipped open — show hollow interior
+    ctx.fillStyle='#4A2000';
+    ctx.beginPath();
+    ctx.ellipse(px+TILE/2, py+TILE/2+2, TILE/2-4, TILE/2-6, 0, 0, Math.PI*2);
+    ctx.fill();
+    ctx.fillStyle='#2A1000';
+    ctx.beginPath();
+    ctx.ellipse(px+TILE/2, py+TILE/2+2, TILE/2-9, TILE/2-11, 0, 0, Math.PI*2);
+    ctx.fill();
+
+    // Food items appear with animation
+    const appear = clamp(winTimer/0.9, 0, 1);
+    const foods  = [
+      {ox:-7, oy:-3, c:'#e84040', r:4.5},  // apple
+      {ox: 6, oy:-5, c:'#f0a020', r:4.0},  // mango
+      {ox:-2, oy: 6, c:'#e8e020', r:3.5},  // lemon
+      {ox: 8, oy: 5, c:'#c040c0', r:3.0},  // grape
+      {ox:-9, oy: 5, c:'#40c850', r:3.0},  // berry
+    ];
+    for (const {ox,oy,c,r} of foods) {
+      ctx.globalAlpha = appear;
+      ctx.fillStyle = c;
+      ctx.beginPath();
+      ctx.arc(px+TILE/2+ox*appear, py+TILE/2+oy*appear, r*appear, 0, Math.PI*2);
+      ctx.fill();
+      ctx.fillStyle='rgba(255,255,255,0.45)';
+      ctx.beginPath();
+      ctx.arc(px+TILE/2+ox*appear-1, py+TILE/2+oy*appear-1, r*appear*0.38, 0, Math.PI*2);
+      ctx.fill();
+    }
+    ctx.globalAlpha=1;
+
+    // Broken drum side leaning away
+    ctx.save();
+    ctx.translate(px+TILE/2+20, py+TILE/2-2);
+    ctx.rotate(0.55);
+    ctx.fillStyle='#783c14';
+    ctx.fillRect(-3,-14,7,28);
+    ctx.strokeStyle='#5a2a0a'; ctx.lineWidth=2; ctx.strokeRect(-3,-14,7,28);
+    ctx.restore();
+  } else {
+    // Normal drum
+    ctx.fillStyle='#783c14';
+    ctx.beginPath();
+    ctx.ellipse(px+TILE/2, py+TILE/2+2, TILE/2-5, TILE/2-7, 0, 0, Math.PI*2);
+    ctx.fill();
+    ctx.strokeStyle='#5a2a0a'; ctx.lineWidth=3; ctx.stroke();
+    // Stripes
+    ctx.strokeStyle='#5a2a0a'; ctx.lineWidth=2;
+    for (let i=0;i<3;i++) {
+      ctx.beginPath();
+      ctx.ellipse(px+TILE/2, py+TILE/2+i*4, TILE/2-5, 3, 0, 0, Math.PI*2);
+      ctx.stroke();
+    }
+    // Skin
+    ctx.fillStyle='#d4b47a';
+    ctx.beginPath();
+    ctx.ellipse(px+TILE/2, py+9, TILE/2-5, 7, 0, 0, Math.PI*2);
+    ctx.fill();
+    ctx.strokeStyle='#a88040'; ctx.lineWidth=2; ctx.stroke();
+  }
+
+  // Tree branch hitting drum
+  ctx.strokeStyle='#6e4820'; ctx.lineWidth=5; ctx.lineCap='round';
+  ctx.beginPath();
+  ctx.moveTo(px+TILE/2-10, py-12);
+  ctx.quadraticCurveTo(px+TILE/2-4, py+2, px+TILE/2+6, py+15);
+  ctx.stroke();
+  // Leaves
+  ctx.fillStyle='#2e6020';
+  for (const [ox,oy] of [[-14,-10],[-7,-16],[1,-11]]) {
+    ctx.beginPath();
+    ctx.ellipse(px+TILE/2+ox, py+oy, 7, 4, -0.5, 0, Math.PI*2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  JACKAL
+// ═══════════════════════════════════════════════════════════════
+class Jackal {
+  constructor() {
+    this.x=1; this.y=1;        // integer tile coordinates
+    this.facing=1;             // 1=right -1=left
+    this.walkCycle=0;
+    this.jumpTimer=0;          // > 0 = mid-jump
+    this.bumpTimer=0;          // brief flash when hitting wall/obstacle
+    this.moveDelay=0;          // cooldown between tile steps
+    this.eating=false;
+    this.eatCycle=0;
+  }
+
+  get jumping() { return this.jumpTimer > 0; }
+
+  tryJump() {
+    if (!this.jumping) {
+      this.jumpTimer = 0.45;
+      this.moveDelay = 0;   // allow immediate move so space+arrow works together
+    }
+  }
+
+  // Move exactly one tile in (dx,dy). Returns true if moved.
+  tryMove(dx, dy, grid, obs) {
+    if (this.moveDelay > 0 && !this.jumping) return false;
+
+    if (dx > 0) this.facing = 1;
+    if (dx < 0) this.facing = -1;
+
+    const nx = this.x + dx;
+    const ny = this.y + dy;
+
+    if (nx < 0 || nx >= COLS || ny < 0 || ny >= ROWS) return false;
+    if (obs[ny][nx] !== OBS_NONE && !this.jumping) { this.bumpTimer = 0.12; return false; }
+
+    this.x = nx;
+    this.y = ny;
+    this.walkCycle += 1.6;
+    this.moveDelay = 0.13;   // ~7-8 steps/sec while key held
+    return true;
+  }
+
+  update(dt) {
+    if (this.moveDelay>0) this.moveDelay=Math.max(0, this.moveDelay-dt);
+    if (this.jumpTimer>0) this.jumpTimer=Math.max(0, this.jumpTimer-dt);
+    if (this.bumpTimer>0) this.bumpTimer=Math.max(0, this.bumpTimer-dt);
+    if (this.eating) this.eatCycle+=dt*5;
+  }
+
+  draw() {
+    if (this.bumpTimer>0 && Math.floor(this.bumpTimer*12)%2===0) return;
+
+    const cx = this.x*TILE + TILE/2;
+    const cy = this.y*TILE + TILE*0.55;
+    const t  = this.jumpTimer / 0.45;
+    const jscale = 1 + Math.sin(Math.PI*t)*0.18;
+    const lift   = Math.sin(Math.PI*t)*14;
+    const eatBob = this.eating ? Math.max(0, Math.sin(this.eatCycle))*9 : 0;
+
+    // Ground shadow
+    ctx.fillStyle=`rgba(0,0,0,${0.18+jscale*0.08})`;
+    ctx.beginPath();
+    ctx.ellipse(cx, cy+11, 14*jscale, 5, 0, 0, Math.PI*2);
+    ctx.fill();
+
+    // Jump glow arc
+    if (this.jumping) {
+      ctx.strokeStyle=`rgba(240,210,50,${0.55*Math.sin(Math.PI*t)})`;
+      ctx.lineWidth=3;
+      ctx.beginPath(); ctx.arc(cx, cy-lift, 24*jscale, 0, Math.PI*2); ctx.stroke();
+    }
+
+    renderJackal(cx, cy - lift - eatBob, 0.85*jscale, this.facing, this.walkCycle,
+      { noShadow: true, eatBob: eatBob > 0 ? eatBob : 0 });
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  COMPASS
+// ═══════════════════════════════════════════════════════════════
+function drawCompass(cx, cy, sig) {
+  const R=44;
+  const bg=ctx.createRadialGradient(cx,cy,0,cx,cy,R);
+  bg.addColorStop(0,'#2a2a2a'); bg.addColorStop(1,'#111');
+  ctx.fillStyle=bg; ctx.beginPath(); ctx.arc(cx,cy,R,0,Math.PI*2); ctx.fill();
+  ctx.strokeStyle='#555'; ctx.lineWidth=2; ctx.stroke();
+
+  ctx.strokeStyle='#444'; ctx.lineWidth=1;
+  for (let i=0;i<36;i++) {
+    const a=(i/36)*Math.PI*2, r0=i%9===0?R-10:R-6;
+    ctx.beginPath();
+    ctx.moveTo(cx+r0*Math.cos(a),cy+r0*Math.sin(a));
+    ctx.lineTo(cx+(R-2)*Math.cos(a),cy+(R-2)*Math.sin(a));
+    ctx.stroke();
+  }
+  ctx.font='bold 12px monospace'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  for (const [l,d] of [['N',0],['E',90],['S',180],['W',270]]) {
+    const a=(d-90)*Math.PI/180;
+    ctx.fillStyle=d===0?'#ff6655':'#aaa';
+    ctx.fillText(l, cx+(R-14)*Math.cos(a), cy+(R-14)*Math.sin(a));
+  }
+
+  if (!sig) {
+    ctx.fillStyle='#555'; ctx.font='11px monospace'; ctx.textAlign='center';
+    ctx.textBaseline='alphabetic'; ctx.fillText('SIGNAL',cx,cy+R+12);
+    return;
+  }
+
+  const a=(sig.dir-90)*Math.PI/180, nr=R-8, v=sig.clarity;
+  ctx.strokeStyle='rgba(70,70,70,0.5)'; ctx.lineWidth=3; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(cx,cy);
+  ctx.lineTo(cx-nr*0.4*Math.cos(a), cy-nr*0.4*Math.sin(a)); ctx.stroke();
+
+  const rc=Math.floor(200*(1-v)+240*v), gc=Math.floor(50*(1-v)+200*v);
+  ctx.strokeStyle=`rgb(${rc},${gc},30)`; ctx.lineWidth=3;
+  ctx.beginPath(); ctx.moveTo(cx,cy);
+  ctx.lineTo(cx+nr*Math.cos(a), cy+nr*Math.sin(a)); ctx.stroke();
+  ctx.fillStyle=`rgb(${rc},${gc},30)`;
+  ctx.beginPath(); ctx.arc(cx+nr*Math.cos(a),cy+nr*Math.sin(a),4,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#888'; ctx.beginPath(); ctx.arc(cx,cy,4,0,Math.PI*2); ctx.fill();
+
+  ctx.fillStyle='#555'; ctx.font='11px monospace';
+  ctx.textAlign='center'; ctx.textBaseline='alphabetic';
+  ctx.fillText('SIGNAL',cx,cy+R+12);
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  VOLUME METER
+// ═══════════════════════════════════════════════════════════════
+function drawVolume(x, y, vol) {
+  const VW=24,VH=65,segs=10,segH=(VH-2)/segs;
+  for (let i=0;i<segs;i++) {
+    const frac=(segs-i)/segs;
+    ctx.fillStyle = frac<=vol
+      ? `rgb(${Math.floor(50+200*frac)},${Math.floor(160-60*frac)},30)`
+      : '#1e1e1e';
+    ctx.fillRect(x+2, y+1+i*segH, VW-4, segH-1);
+  }
+  ctx.strokeStyle='#777'; ctx.lineWidth=2; ctx.strokeRect(x,y,VW,VH);
+  ctx.fillStyle='#555'; ctx.font='11px monospace';
+  ctx.textAlign='center'; ctx.textBaseline='alphabetic';
+  ctx.fillText('VOL',x+VW/2,y+VH+12);
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  HUD
+// ═══════════════════════════════════════════════════════════════
+function drawHUD(sig, beatCount, beatTimer, maxBeat) {
+  const y0=MAP_H;
+  const hg=ctx.createLinearGradient(0,y0,0,H);
+  hg.addColorStop(0,'#141414'); hg.addColorStop(1,'#0a0a0a');
+  ctx.fillStyle=hg; ctx.fillRect(0,y0,W,HUD_H);
+  ctx.strokeStyle='#444'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(0,y0); ctx.lineTo(W,y0); ctx.stroke();
+
+  // Beat countdown bar
+  const bx=W-168, by=y0+12, bw=138, bh=13;
+  ctx.fillStyle='#1a1a1a'; ctx.fillRect(bx,by,bw,bh);
+  const fr=clamp(beatTimer/maxBeat,0,1);
+  if (fr>0) {
+    const bg=ctx.createLinearGradient(bx,0,bx+bw,0);
+    bg.addColorStop(0,'#884400'); bg.addColorStop(1,'#ffaa22');
+    ctx.fillStyle=bg; ctx.fillRect(bx,by,Math.floor(bw*fr),bh);
+  }
+  ctx.strokeStyle='#666'; ctx.lineWidth=1.5; ctx.strokeRect(bx,by,bw,bh);
+  ctx.fillStyle='#555'; ctx.font='10px monospace';
+  ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+  ctx.fillText('NEXT BEAT', bx, by+bh+13);
+  ctx.fillStyle='#f0d232';
+  ctx.fillText(`BEATS: ${beatCount}`, bx, by+bh+26);
+
+
+  // Obstacle legend (bottom left)
+  ctx.fillStyle='#333'; ctx.font='10px monospace';
+  ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+  ctx.fillText('Obstacles: 🪖 Chariot  🏹 Bow  ⚔ Sword  |  SPACE = Jump over', 12, H-8);
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  OVERLAYS
+// ═══════════════════════════════════════════════════════════════
+const INTRO = [
+  {t:'THE JACKAL & THE DRUM',         big:true,  c:'#f0d232'},
+  {t:'Panchatantra',                   big:false, c:'#666'},
+  {t:'',                              big:false, c:'#fff'},
+  {t:'A deserted battlefield.',        big:false, c:'#ddd'},
+  {t:'Somewhere in this maze — a drum beats.', big:false, c:'#ddd'},
+  {t:'',                              big:false, c:'#fff'},
+  {t:'Navigate. Jump over obstacles.', big:false, c:'#aaa'},
+  {t:'Follow the signal. Find the drum.', big:false, c:'#888'},
+];
+
+const WIN = [
+  {t:'YOU FOUND IT.',                  big:true,  c:'#f0d232'},
+  {t:'',                              big:false, c:'#fff'},
+  {t:'A drum. A branch. Wind.',        big:false, c:'#ddd'},
+  {t:'And inside — a feast!',          big:false, c:'#ddd'},
+  {t:'',                              big:false, c:'#fff'},
+  {t:'"The thing most feared',         big:false, c:'#aaa'},
+  {t:' is often the most hollow."',   big:false, c:'#aaa'},
+  {t:'',                              big:false, c:'#fff'},
+  {t:'Press  R  to play again.',       big:false, c:'#555'},
+];
+
+function drawOverlay(lines) {
+  ctx.fillStyle='rgba(0,0,0,0.86)'; ctx.fillRect(0,0,W,H);
+  ctx.strokeStyle='rgba(240,210,50,0.2)'; ctx.lineWidth=2;
+  ctx.strokeRect(28,28,W-56,H-56);
+  let y=110;
+  ctx.textAlign='center'; ctx.textBaseline='alphabetic';
+  for (const {t,big,c} of lines) {
+    ctx.font=big?'bold 28px monospace':'16px monospace';
+    ctx.fillStyle=c; ctx.fillText(t,W/2,y);
+    y+=big?50:28;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  PARTICLES
+// ═══════════════════════════════════════════════════════════════
+class Particle {
+  constructor(x,y,color) {
+    this.x=x; this.y=y;
+    this.vx=rnd(-2,2); this.vy=rnd(-3,0.5);
+    this.life=1; this.r=rnd(2,5);
+    this.color=color||`hsl(${rndi(30,50)},90%,65%)`;
+  }
+  update(dt) { this.x+=this.vx; this.y+=this.vy; this.vy+=0.08; this.life-=dt*1.4; }
+  draw() {
+    ctx.globalAlpha=Math.max(0,this.life);
+    ctx.fillStyle=this.color;
+    ctx.beginPath(); ctx.arc(this.x,this.y,this.r,0,Math.PI*2); ctx.fill();
+    ctx.globalAlpha=1;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  NOM TEXT  — floating food words
+// ═══════════════════════════════════════════════════════════════
+class NomText {
+  constructor(x,y) {
+    this.x=x+rnd(-20,20); this.y=y;
+    this.vy=-1.2; this.life=1;
+    this.word=['nom!','munch!','crunch!','yum!'][rndi(0,3)];
+  }
+  update(dt) { this.y+=this.vy; this.life-=dt*1.2; }
+  draw() {
+    ctx.globalAlpha=Math.max(0,this.life);
+    ctx.fillStyle='#f0d232'; ctx.font='bold 13px monospace';
+    ctx.textAlign='center'; ctx.textBaseline='alphabetic';
+    ctx.fillText(this.word, this.x, this.y);
+    ctx.globalAlpha=1;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  STORY — shared jackal draw for story scenes
+// ═══════════════════════════════════════════════════════════════
+// ── renderJackal ──────────────────────────────────────────────
+// Draws a realistic jackal centred at (cx, cy).
+// s      = scale (0.85 for game tile, 2.5 for story scenes)
+// facing = 1 (right) or -1 (left)
+// walkT  = walk-cycle timer (radians)
+// opts   = { sniff, scared, determined, noShadow, eatBob }
+function renderJackal(cx, cy, s, facing, walkT, opts) {
+  opts = opts || {};
+  const f   = facing;
+  // F(u) = forward offset;  U(u) = up offset (negative = up)
+  const F   = u => u * s * f;
+  const U   = u => u * s;
+
+  const bob     = Math.sin(walkT * 3)   * 1.6 * s;
+  const snipDip = opts.sniff      ? Math.abs(Math.sin(walkT*2)) * 7 * s : 0;
+  const shake   = opts.scared     ? Math.sin(walkT * 18) * 2 * s        : 0;
+  const earPull = opts.scared     ? 5 * s : 0;
+  const tailLift= opts.determined ? -5 * s : 2 * s;
+  const eatDip  = opts.eatBob     || 0;
+
+  ctx.save();
+  ctx.translate(cx + shake, cy);
+
+  // ── Ground shadow ─────────────────────────────────────────
+  if (!opts.noShadow) {
+    ctx.fillStyle = 'rgba(0,0,0,0.22)';
+    ctx.beginPath();
+    ctx.ellipse(F(0), U(13)+bob, 13*s, 4*s, 0, 0, Math.PI*2);
+    ctx.fill();
+  }
+
+  // ── Tail (thick, curving up behind body) ──────────────────
+  ctx.lineCap = 'round';
+  // Main tail fur
+  ctx.strokeStyle = '#8a5c14'; ctx.lineWidth = 5.5*s;
+  ctx.beginPath();
+  ctx.moveTo(F(-11), U(2)+bob);
+  ctx.quadraticCurveTo(F(-20), U(-3)+bob+tailLift, F(-17), U(-15)+tailLift);
+  ctx.stroke();
+  // Tail highlight
+  ctx.strokeStyle = '#c08830'; ctx.lineWidth = 2*s;
+  ctx.beginPath();
+  ctx.moveTo(F(-12), U(1)+bob);
+  ctx.quadraticCurveTo(F(-19), U(-4)+bob+tailLift, F(-16), U(-14)+tailLift);
+  ctx.stroke();
+  // Black tail tip
+  ctx.strokeStyle = '#1a0a04'; ctx.lineWidth = 3.5*s;
+  ctx.beginPath();
+  ctx.moveTo(F(-16), U(-13)+tailLift);
+  ctx.quadraticCurveTo(F(-18), U(-17)+tailLift, F(-15), U(-20)+tailLift);
+  ctx.stroke();
+
+  // ── Legs (4 visible from side, alternating walk) ──────────
+  const lA = Math.sin(walkT*4) * 3 * s;
+  const lB = Math.sin(walkT*4 + Math.PI) * 3 * s;
+  ctx.strokeStyle = '#9a6818'; ctx.lineWidth = 2.5*s;
+  // Hind pair (back of body)
+  ctx.beginPath(); ctx.moveTo(F(-7), U(5)+bob); ctx.lineTo(F(-8), U(13)+bob+lA); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(F(-5), U(6)+bob); ctx.lineTo(F(-5), U(14)+bob+lB); ctx.stroke();
+  // Fore pair (front of body)
+  ctx.beginPath(); ctx.moveTo(F(5),  U(4)+bob); ctx.lineTo(F(5),  U(13)+bob+lB); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(F(7),  U(4)+bob); ctx.lineTo(F(8),  U(13)+bob+lA); ctx.stroke();
+
+  // ── Body (golden tawny, elongated) ────────────────────────
+  ctx.fillStyle = '#c8902a';
+  ctx.beginPath();
+  ctx.ellipse(F(-1), U(0)+bob, 12*s, 6.5*s, 0, 0, Math.PI*2);
+  ctx.fill();
+  // Dark dorsal saddle — black-backed jackal's defining mark
+  ctx.fillStyle = '#3e2a0c';
+  ctx.beginPath();
+  ctx.ellipse(F(-2), U(-3.5)+bob, 10*s, 3*s, 0, 0, Math.PI*2);
+  ctx.fill();
+  // Pale cream belly
+  ctx.fillStyle = '#ecca6a';
+  ctx.beginPath();
+  ctx.ellipse(F(1), U(3)+bob, 7.5*s, 3*s, 0, 0, Math.PI*2);
+  ctx.fill();
+
+  // ── Neck (connects body to head) ──────────────────────────
+  ctx.fillStyle = '#b8821e';
+  ctx.beginPath();
+  ctx.ellipse(F(9), U(-3.5)+bob, 4.5*s, 5*s, F(0.25)*0.15, 0, Math.PI*2);
+  ctx.fill();
+
+  // ── Head ──────────────────────────────────────────────────
+  const hx = F(14), hy = U(-6)+bob-snipDip-eatDip;
+  ctx.fillStyle = '#c8902a';
+  ctx.beginPath();
+  ctx.ellipse(hx, hy, 6.5*s, 6*s, 0, 0, Math.PI*2);
+  ctx.fill();
+  // Slightly darker crown
+  ctx.fillStyle = '#a07018';
+  ctx.beginPath();
+  ctx.ellipse(hx+F(-1), hy-U(2.5), 4.5*s, 2.5*s, 0, 0, Math.PI*2);
+  ctx.fill();
+
+  // ── SNOUT — long, tapered wedge (key jackal feature) ──────
+  // The snout extends well forward of the round head
+  ctx.fillStyle = '#a87018';
+  ctx.beginPath();
+  ctx.moveTo(hx+F(5),  hy-U(1.8));   // upper snout root
+  ctx.lineTo(hx+F(16), hy+U(0.5));   // nose tip  ← extended
+  ctx.lineTo(hx+F(5),  hy+U(4.2));   // lower snout root
+  ctx.quadraticCurveTo(hx+F(2), hy+U(1.5), hx+F(5), hy-U(1.8));
+  ctx.closePath();
+  ctx.fill();
+  // Muzzle cheek crease
+  ctx.strokeStyle = '#7a5010'; ctx.lineWidth = 0.8*s;
+  ctx.beginPath();
+  ctx.moveTo(hx+F(5), hy+U(1)); ctx.lineTo(hx+F(10), hy+U(2.5)); ctx.stroke();
+  // Nose (black, at tip of snout)
+  ctx.fillStyle = '#120600';
+  ctx.beginPath();
+  ctx.ellipse(hx+F(15), hy+U(0.5), 2*s, 1.6*s, 0, 0, Math.PI*2);
+  ctx.fill();
+  // Nostril highlight
+  ctx.fillStyle = 'rgba(80,40,0,0.6)';
+  ctx.beginPath();
+  ctx.ellipse(hx+F(14.5), hy+U(0), 0.8*s, 0.6*s, 0, 0, Math.PI*2);
+  ctx.fill();
+
+  // ── EARS — tall, very large, upright (key jackal feature) ─
+  // Back ear (slightly behind front, darker)
+  ctx.fillStyle = '#a87018';
+  ctx.beginPath();
+  ctx.moveTo(hx+F(-3), hy-U(4)+earPull);
+  ctx.lineTo(hx+F(-5), hy-U(19)+earPull*0.6);  // tall tip
+  ctx.lineTo(hx+F(1),  hy-U(4));
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#cc8030';                      // inner ear
+  ctx.beginPath();
+  ctx.moveTo(hx+F(-3), hy-U(5)+earPull);
+  ctx.lineTo(hx+F(-4), hy-U(16)+earPull*0.6);
+  ctx.lineTo(hx+F(0),  hy-U(5));
+  ctx.closePath(); ctx.fill();
+
+  // Front ear (taller, more prominent)
+  ctx.fillStyle = '#c8902a';
+  ctx.beginPath();
+  ctx.moveTo(hx+F(2),  hy-U(4));
+  ctx.lineTo(hx+F(5),  hy-U(21));               // very tall!
+  ctx.lineTo(hx+F(9),  hy-U(3.5));
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#e09040';                      // inner — pinkish tan
+  ctx.beginPath();
+  ctx.moveTo(hx+F(3),  hy-U(5));
+  ctx.lineTo(hx+F(5),  hy-U(18));
+  ctx.lineTo(hx+F(8),  hy-U(4.5));
+  ctx.closePath(); ctx.fill();
+
+  // ── Eye (amber with dark pupil) ───────────────────────────
+  const ex = hx+F(3.5), ey = hy-U(1.5);
+  ctx.fillStyle = '#f0e8c8';                      // sclera
+  ctx.beginPath(); ctx.ellipse(ex, ey, 2.8*s, 2.2*s, 0, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = opts.scared ? '#b03010' : '#b87818';  // iris
+  ctx.beginPath(); ctx.arc(ex, ey, 1.9*s, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#080400';                      // pupil
+  ctx.beginPath(); ctx.arc(ex, ey, 1.1*s, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.75)';       // specular
+  ctx.beginPath(); ctx.arc(ex+0.5*s, ey-0.5*s, 0.55*s, 0, Math.PI*2); ctx.fill();
+
+  // ── Whiskers (only drawn at larger scales) ────────────────
+  if (s >= 1.5) {
+    ctx.strokeStyle = 'rgba(220,210,180,0.55)'; ctx.lineWidth = 0.8;
+    for (let i=0; i<3; i++) {
+      const wy = hy + (i-1)*2.2*s;
+      ctx.beginPath();
+      ctx.moveTo(hx+F(9), wy);
+      ctx.lineTo(hx+F(9)+f*15*s, wy+(i-1)*2*s);
+      ctx.stroke();
+    }
+  }
+
+  // ── Scared: radiating fear lines ─────────────────────────
+  if (opts.scared) {
+    ctx.strokeStyle = 'rgba(255,200,50,0.5)'; ctx.lineWidth = 1.5;
+    for (let i=0; i<8; i++) {
+      const a = i*Math.PI/4 + walkT*0.6;
+      ctx.beginPath();
+      ctx.moveTo(F(0)+Math.cos(a)*13*s, U(0)+Math.sin(a)*11*s);
+      ctx.lineTo(F(0)+Math.cos(a)*22*s, U(0)+Math.sin(a)*19*s);
+      ctx.stroke();
+    }
+    ctx.fillStyle = 'rgba(255,60,20,0.9)';
+    ctx.font = `bold ${9*s}px monospace`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+    ctx.fillText('!', hx, hy-U(26));
+  }
+
+  ctx.restore();
+}
+
+// Thin wrapper used by story scenes
+function drawJackalAt(cx, cy, sc, f, t, mode) {
+  renderJackal(cx, cy, sc * 0.72, f, t, {
+    sniff:       mode === 'sniff',
+    scared:      mode === 'scared',
+    determined:  mode === 'determined',
+  });
+}
+
+// ── Story class ───────────────────────────────────────────────
+class Story {
+  constructor() {
+    this.scene     = 0;
+    this.t         = 0;      // time in current phase
+    this.showT     = 0;      // time spent in 'show' phase
+    this.phase     = 'fadein';
+    this.fadeAlpha = 1;
+    this.done      = false;
+    this.skipReady = false;  // true once scene has shown for ≥0.8s
+
+    // Scene 1 state
+    this.waves     = [];
+    this.boomAlpha = 0;
+  }
+
+  requestAdvance() {
+    if (this.phase === 'show' && this.skipReady) this._startFadeOut();
+  }
+
+  _startFadeOut() {
+    if (this.phase !== 'show') return;
+    this.phase = 'fadeout';
+    this.t     = 0;
+  }
+
+  update(dt) {
+    this.t += dt;
+
+    if (this.phase === 'fadein') {
+      this.fadeAlpha = Math.max(0, 1 - this.t / 0.65);
+      if (this.t >= 0.65) { this.phase='show'; this.t=0; this.showT=0; this.skipReady=false; }
+      return;
+    }
+
+    if (this.phase === 'show') {
+      this.showT += dt;
+      if (this.showT > 0.9) this.skipReady = true;
+
+      // Scene 1: sound waves + BOOM after 2.5 s
+      if (this.scene === 1 && this.showT > 2.5) {
+        if (Math.random() < dt * 2.2 && this.waves.length < 7)
+          this.waves.push({ r: 6, a: 0.9 });
+        this.boomAlpha = clamp(this.boomAlpha + dt * 2.2, 0, 1);
+      }
+      this.waves.forEach(w => { w.r += 55*dt; w.a -= dt*0.7; });
+      this.waves = this.waves.filter(w => w.a > 0);
+
+      // Auto-advance after scene duration
+      const dur = [5.5, 6.0, 7.0][this.scene];
+      if (this.showT >= dur) this._startFadeOut();
+      return;
+    }
+
+    if (this.phase === 'fadeout') {
+      this.fadeAlpha = clamp(this.t / 0.6, 0, 1);
+      if (this.t >= 0.6) {
+        this.scene++;
+        if (this.scene >= 3) { this.done = true; return; }
+        this.phase = 'fadein'; this.t = 0; this.showT = 0; this.fadeAlpha = 1;
+        this.waves = []; this.boomAlpha = 0;
+      }
+    }
+  }
+
+  // ── Text panel ─────────────────────────────────────────────
+  _panel(lines, showContinue) {
+    const ph = 100, py = H - ph;
+    ctx.fillStyle = 'rgba(0,0,0,0.78)';
+    ctx.fillRect(0, py, W, ph);
+    ctx.strokeStyle = 'rgba(240,210,50,0.25)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0,py); ctx.lineTo(W,py); ctx.stroke();
+
+    ctx.textAlign='center'; ctx.textBaseline='alphabetic';
+    lines.forEach((ln,i) => {
+      ctx.font = i===0 ? 'italic 16px Georgia,serif' : '13px monospace';
+      ctx.fillStyle = i===0 ? '#f0d0a0' : '#ccc';
+      ctx.fillText(ln, W/2, py+26+i*24);
+    });
+
+    if (showContinue) {
+      ctx.fillStyle='rgba(130,130,130,0.75)';
+      ctx.font='11px monospace';
+      ctx.fillText('— click or press any key to continue —', W/2, py+ph-10);
+    }
+  }
+
+  // ── Scene 0: Forest / searching for food ──────────────────
+  _drawForest() {
+    const t = this.showT;
+
+    // Sky
+    const sky = ctx.createLinearGradient(0,0,0,H*0.62);
+    sky.addColorStop(0,'#04100a'); sky.addColorStop(1,'#0c1e10');
+    ctx.fillStyle=sky; ctx.fillRect(0,0,W,H);
+
+    // Moon + glow
+    ctx.fillStyle='rgba(255,245,220,0.15)';
+    ctx.beginPath(); ctx.arc(W*0.82,H*0.11,46,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='rgba(255,245,210,0.9)';
+    ctx.beginPath(); ctx.arc(W*0.82,H*0.11,26,0,Math.PI*2); ctx.fill();
+
+    // Stars
+    ctx.fillStyle='rgba(255,255,220,0.7)';
+    for (let i=0;i<28;i++) {
+      const sx=((i*137)%W), sy=((i*89)%(H*0.55));
+      const sr=0.5+(i%3)*0.4;
+      ctx.beginPath(); ctx.arc(sx,sy,sr,0,Math.PI*2); ctx.fill();
+    }
+
+    // Ground
+    const grd=ctx.createLinearGradient(0,H*0.6,0,H);
+    grd.addColorStop(0,'#1e1006'); grd.addColorStop(1,'#120a02');
+    ctx.fillStyle=grd; ctx.fillRect(0,H*0.6,W,H*0.4);
+
+    // Ground moss stripe
+    ctx.fillStyle='#162210';
+    ctx.fillRect(0, H*0.6, W, 16);
+
+    // Background trees (lighter layer)
+    for (let i=0;i<9;i++) {
+      const tx=(i/8)*W*1.15-W*0.07, ty=H*0.48+Math.sin(i*1.9)*18;
+      const tr=52+(i%3)*24;
+      ctx.fillStyle='#081408';
+      ctx.beginPath(); ctx.arc(tx,ty,tr,0,Math.PI*2); ctx.fill();
+    }
+    // Foreground trees
+    for (let i=0;i<6;i++) {
+      const tx=(i/5)*W*1.1-W*0.05, ty=H*0.56+Math.sin(i*2.5)*12;
+      const tr=68+(i%2)*28;
+      ctx.fillStyle='#050e05';
+      ctx.beginPath(); ctx.arc(tx,ty,tr,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle='#1a0a04';
+      ctx.fillRect(tx-5,ty+tr*0.5,10,H*0.6-ty-tr*0.5+6);
+    }
+
+    // Dappled moonlight on ground
+    for (let i=0;i<5;i++) {
+      ctx.fillStyle='rgba(240,230,160,0.04)';
+      ctx.beginPath();
+      ctx.ellipse(i*190+95,H*0.68,60,18,0.3,0,Math.PI*2);
+      ctx.fill();
+    }
+
+    // Jackal walking / sniffing
+    const jx = W*0.46 + Math.sin(t*1.1)*10;
+    const jy = H*0.61;
+    drawJackalAt(jx, jy-22, 3.4, 1, t, 'sniff');
+
+    // Stomach growl (appears after 1.2s)
+    if (t > 1.2) {
+      const ga = clamp((t-1.2)/0.6, 0, 1);
+      ctx.fillStyle=`rgba(240,180,70,${ga*0.88})`;
+      ctx.font='italic 14px monospace';
+      ctx.textAlign='center'; ctx.textBaseline='alphabetic';
+      ctx.fillText('grrrr...', jx+56, jy-68+Math.sin(t*2.8)*4);
+      // Empty-belly curve
+      ctx.strokeStyle=`rgba(240,180,70,${ga*0.45})`; ctx.lineWidth=1.5;
+      ctx.beginPath();
+      ctx.arc(jx+8, jy-40, 10, 0.5, Math.PI-0.5);
+      ctx.stroke();
+    }
+
+    this._panel(
+      t < 2.5
+        ? ["Deep in the forest, a hungry jackal prowled the shadows."]
+        : ["Deep in the forest, a hungry jackal prowled the shadows.",
+           "Days without food. He needed to search further..."],
+      t > 2.0
+    );
+  }
+
+  // ── Scene 1: Emerges onto battlefield + BOOM ───────────────
+  _drawBattlefield() {
+    const t = this.showT;
+    const slideX = clamp(t / 1.2, 0, 1); // forest slides left as battlefield revealed
+
+    // Battlefield background (sandy)
+    const field = ctx.createLinearGradient(0, 0, 0, H*0.62);
+    field.addColorStop(0,'#8a7040'); field.addColorStop(1,'#c2a860');
+    ctx.fillStyle=field; ctx.fillRect(0,0,W,H);
+    // Ground
+    ctx.fillStyle='#b09050'; ctx.fillRect(0,H*0.62,W,H*0.38);
+
+    // Battlefield debris (ruins, broken spears)
+    ctx.fillStyle='rgba(80,70,60,0.6)';
+    for (const [dx,dy,dw,dh] of [[W*0.5,H*0.3,18,80],[W*0.65,H*0.45,14,60],[W*0.78,H*0.38,16,70]]) {
+      ctx.save(); ctx.translate(dx,dy); ctx.rotate(0.3+dx*0.002);
+      ctx.fillRect(-dw/2,-dh/2,dw,dh); ctx.restore();
+    }
+    // Broken wheel
+    ctx.strokeStyle='rgba(100,70,30,0.7)'; ctx.lineWidth=5;
+    ctx.beginPath(); ctx.arc(W*0.72,H*0.55,28,0,Math.PI*2); ctx.stroke();
+
+    // Forest overlay sliding in from left
+    const forestW = W * (0.42 - slideX * 0.18);
+    if (forestW > 0) {
+      ctx.save();
+      ctx.beginPath(); ctx.rect(0, 0, forestW, H); ctx.clip();
+      const sky2=ctx.createLinearGradient(0,0,0,H*0.62);
+      sky2.addColorStop(0,'#04100a'); sky2.addColorStop(1,'#0c1e10');
+      ctx.fillStyle=sky2; ctx.fillRect(0,0,forestW,H);
+      ctx.fillStyle='#1e1006'; ctx.fillRect(0,H*0.62,forestW,H*0.38);
+      for (let i=0;i<6;i++) {
+        const tx=(i/5)*forestW*1.1, ty=H*0.52+Math.sin(i*2.1)*15, tr=58+(i%3)*22;
+        ctx.fillStyle='#050e05';
+        ctx.beginPath(); ctx.arc(tx,ty,tr,0,Math.PI*2); ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    // Forest/field edge line
+    ctx.strokeStyle='rgba(50,80,40,0.5)'; ctx.lineWidth=3;
+    ctx.beginPath(); ctx.moveTo(forestW,0); ctx.lineTo(forestW,H); ctx.stroke();
+
+    // Jackal at forest edge stepping out
+    const jackX = forestW + 20 + clamp(t-0.8,0,1.5)*60;
+    const jackY = H*0.62;
+    const jMode = t < 1.5 ? 'walk' : 'walk';
+    drawJackalAt(jackX, jackY-22, 3.2, 1, t, jMode);
+
+    // Sound waves from drum direction (right edge)
+    if (t > 2.5) {
+      const wcx=W-10, wcy=H*0.38;
+      for (const w of this.waves) {
+        ctx.strokeStyle=`rgba(240,210,50,${w.a})`; ctx.lineWidth=2.5;
+        ctx.beginPath(); ctx.arc(wcx,wcy,w.r,0,Math.PI*2); ctx.stroke();
+      }
+    }
+
+    // BOOM! text
+    if (this.boomAlpha > 0) {
+      const pulse = 1 + Math.sin(t*6)*0.07;
+      ctx.save();
+      ctx.translate(W*0.78, H*0.35);
+      ctx.scale(pulse, pulse);
+      ctx.fillStyle=`rgba(255,90,20,${this.boomAlpha})`;
+      ctx.font='bold 58px monospace';
+      ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillText('BOOM!', 0, 0);
+      // Flash overlay
+      ctx.fillStyle=`rgba(255,200,50,${this.boomAlpha*0.12})`;
+      ctx.fillRect(-W,-H*0.5,W*2,H*1.5);
+      ctx.restore();
+    }
+
+    this._panel(
+      t < 2.5
+        ? ["He wandered past the treeline... onto a forgotten battlefield."]
+        : ["He wandered past the treeline... onto a forgotten battlefield.",
+           'Silence. Then — out of nowhere — BOOM!'],
+      t > 2.0
+    );
+  }
+
+  // ── Scene 2: Fear → decision ───────────────────────────────
+  _drawChoice() {
+    const t = this.showT;
+    const decided = t > 3.5;
+
+    // Dim battlefield background
+    ctx.fillStyle='#7a6030'; ctx.fillRect(0,0,W,H*0.62);
+    ctx.fillStyle='#a08040'; ctx.fillRect(0,H*0.62,W,H*0.38);
+    // Fog of dread
+    const fog=ctx.createRadialGradient(W/2,H*0.4,0,W/2,H*0.4,W*0.7);
+    fog.addColorStop(0,'rgba(0,0,0,0)'); fog.addColorStop(1,'rgba(0,0,0,0.55)');
+    ctx.fillStyle=fog; ctx.fillRect(0,0,W,H);
+
+    // Forest behind on left
+    ctx.fillStyle='rgba(10,30,10,0.6)';
+    ctx.fillRect(0,0,W*0.18,H);
+    for (let i=0;i<3;i++) {
+      ctx.fillStyle='rgba(5,14,5,0.8)';
+      ctx.beginPath(); ctx.arc(W*0.09,H*0.45+i*55,48,0,Math.PI*2); ctx.fill();
+    }
+
+    // ← Retreat arrow (left, dim)
+    if (!decided) {
+      ctx.fillStyle='rgba(160,140,100,0.55)';
+      ctx.font='bold 22px monospace'; ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillText('◀ retreat', W*0.22, H*0.3);
+      ctx.fillStyle='rgba(120,100,70,0.4)';
+      ctx.font='13px monospace';
+      ctx.fillText('(safety)', W*0.22, H*0.3+26);
+    }
+
+    // Sound waves from right (drum direction)
+    const wCx=W*0.85, wCy=H*0.35;
+    for (let i=0;i<3;i++) {
+      const r=30+i*28+Math.sin(t*2+i)*6;
+      ctx.strokeStyle=`rgba(240,210,50,${0.5-i*0.12})`; ctx.lineWidth=2;
+      ctx.beginPath(); ctx.arc(wCx,wCy,r,0,Math.PI*2); ctx.stroke();
+    }
+    // → Follow arrow
+    const arrowAlpha = decided ? 0.95 : 0.5;
+    ctx.fillStyle=`rgba(240,210,50,${arrowAlpha})`;
+    ctx.font='bold 22px monospace'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText('follow ▶', W*0.75, H*0.28);
+    ctx.font='13px monospace';
+    ctx.fillStyle=`rgba(200,180,80,${arrowAlpha})`;
+    ctx.fillText('(the sound)', W*0.75, H*0.28+26);
+
+    // Jackal — scared then determined
+    const jMode = decided ? 'determined' : 'scared';
+    const jX = W*0.44 + (decided ? clamp((t-3.5)*30,0,24) : 0);
+    drawJackalAt(jX, H*0.62-22, 3.3, 1, t, jMode);
+
+    // Thought bubble lines (scared only)
+    if (!decided) {
+      ctx.strokeStyle='rgba(255,80,30,0.5)'; ctx.lineWidth=2; ctx.setLineDash([5,4]);
+      ctx.beginPath(); ctx.moveTo(jX-60,H*0.62-80); ctx.lineTo(W*0.22,H*0.3+10); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // "One step forward" emphasis when decided
+    if (decided) {
+      const stepAlpha = clamp((t-3.5)/0.6, 0, 1);
+      ctx.fillStyle=`rgba(240,210,50,${stepAlpha*0.9})`;
+      ctx.font='bold 17px monospace'; ctx.textAlign='center'; ctx.textBaseline='alphabetic';
+      ctx.fillText('One step. Then another.', W/2, H*0.2);
+    }
+
+    this._panel(
+      decided
+        ? ['"I must see what makes that sound."',
+           'The jackal took a breath... and stepped forward.',
+           'Press any key or click to begin →']
+        : ['Every instinct screamed: RUN.',
+           'His legs trembled. His ears pinned back. But—'],
+      t > 1.5
+    );
+  }
+
+  draw() {
+    if (this.scene === 0) this._drawForest();
+    else if (this.scene === 1) this._drawBattlefield();
+    else this._drawChoice();
+
+    if (this.fadeAlpha > 0) {
+      ctx.fillStyle=`rgba(0,0,0,${this.fadeAlpha})`;
+      ctx.fillRect(0,0,W,H);
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  GAME
+// ═══════════════════════════════════════════════════════════════
+class Game {
+  static BEAT   = 15.0;  // seconds between beats
+  static REVEAL = 2.2;   // tiles away drum becomes visible
+
+  constructor() {
+    const maze   = buildMaze();
+    this.grid    = maze.grid;
+    this.obs     = maze.obs;
+    this.jackal  = new Jackal();
+
+    this.signal    = null;
+    this.beatCount = 0;
+    this.beatTimer = 0;
+    this.sigAge    = 99;
+    this.drumPulse = 0;
+    this.beatFlash = 0;
+    this.particles = [];
+    this.noms      = [];
+
+    this.winTimer  = 0;
+    this.state     = 'playing';   // story handled separately
+    this.bgCanvas  = this._buildBackground();
+  }
+
+  // Pre-render the battlefield terrain once (called only on construction)
+  _buildBackground() {
+    const bc = Object.assign(document.createElement('canvas'), {width: MAP_W, height: MAP_H});
+    const bg = bc.getContext('2d');
+
+    // Dark base
+    bg.fillStyle = '#1a1408';
+    bg.fillRect(0, 0, MAP_W, MAP_H);
+
+    const s = i => Math.sin(i * 127.1) * 0.5 + 0.5;
+
+    // Base dusty earth
+    bg.fillStyle = '#c09a52';
+    bg.fillRect(0, 0, MAP_W, MAP_H);
+
+    // Large terrain colour blobs — seamless, no tile boundaries
+    for (let i = 0; i < 50; i++) {
+      const x  = s(i*3)   * MAP_W;
+      const y  = s(i*3+1) * MAP_H;
+      const rx = 25 + s(i*3+2) * 70;
+      const ry = 18 + s(i*5)   * 50;
+      const l  = 48 + s(i*11)  * 16;
+      bg.fillStyle = `hsl(${32+s(i*13)*18},${42+s(i*17)*20}%,${l}%)`;
+      bg.beginPath(); bg.ellipse(x, y, rx, ry, s(i*7)*Math.PI, 0, Math.PI*2); bg.fill();
+    }
+
+    // Darker burnt / trampled patches
+    for (let i = 0; i < 28; i++) {
+      const x  = s(i*19+5) * MAP_W;
+      const y  = s(i*23+7) * MAP_H;
+      const rx = 12 + s(i*29) * 40;
+      const ry = 8  + s(i*31) * 28;
+      bg.fillStyle = `rgba(55,30,5,${0.12 + s(i*37)*0.16})`;
+      bg.beginPath(); bg.ellipse(x, y, rx, ry, s(i*41)*Math.PI, 0, Math.PI*2); bg.fill();
+    }
+
+    // Grass tufts — arbitrary positions, not tile-aligned
+    for (let i = 0; i < 260; i++) {
+      const x  = s(i*43+1) * (MAP_W - 8) + 4;
+      const y  = s(i*47+3) * (MAP_H - 8) + 4;
+      const ht = 3 + s(i*53) * 5;
+      bg.fillStyle = `hsl(${86+s(i*59)*32},${36+s(i*61)*20}%,${19+s(i*67)*13}%)`;
+      bg.beginPath(); bg.moveTo(x,   y+ht); bg.lineTo(x-2, y); bg.lineTo(x+2, y); bg.closePath(); bg.fill();
+      bg.beginPath(); bg.moveTo(x+4, y+ht); bg.lineTo(x+2, y-1); bg.lineTo(x+6, y-1); bg.closePath(); bg.fill();
+    }
+
+    // Rocks — arbitrary positions
+    for (let i = 0; i < 70; i++) {
+      const x  = s(i*71+2) * (MAP_W - 14) + 7;
+      const y  = s(i*73+4) * (MAP_H - 14) + 7;
+      const rx = 2 + s(i*79) * 4.5;
+      const ry = 1.5 + s(i*83) * 3;
+      bg.fillStyle = `hsl(26,${5+s(i*89)*11}%,${24+s(i*97)*11}%)`;
+      bg.beginPath(); bg.ellipse(x, y, rx, ry, s(i*101)*Math.PI, 0, Math.PI*2); bg.fill();
+    }
+    return bc;
+  }
+
+  update(dt) {
+    // ── Eating scene
+    if (this.state==='eating') {
+      this.winTimer+=dt;
+      this.jackal.eating=true;
+      this.jackal.update(dt);
+
+      // spawn food particles + nom text
+      if (Math.random()<dt*4) {
+        const cx=DRUM_TX*TILE+TILE/2, cy=DRUM_TY*TILE+TILE/2;
+        const cols=['#e84040','#f0a020','#e8e020','#c040c0','#40c850'];
+        this.particles.push(new Particle(cx+rnd(-12,12), cy+rnd(-12,12), cols[rndi(0,4)]));
+      }
+      if (Math.random()<dt*1.5) {
+        this.noms.push(new NomText(DRUM_TX*TILE+TILE/2, DRUM_TY*TILE+4));
+      }
+      this.particles=this.particles.filter(p=>{p.update(dt);return p.life>0;});
+      this.noms=this.noms.filter(n=>{n.update(dt);return n.life>0;});
+
+      if (this.winTimer>4.5) this.state='won';
+      return;
+    }
+
+    if (this.state!=='playing') return;
+
+    // ── Movement (one tile per step; x-axis takes priority over y)
+    let dx=0, dy=0;
+    if (keys['a']||keys['ArrowLeft'])  dx=-1;
+    if (keys['d']||keys['ArrowRight']) dx= 1;
+    if (keys['w']||keys['ArrowUp'])    dy=-1;
+    if (keys['s']||keys['ArrowDown'])  dy= 1;
+    if (keys[' ']) this.jackal.tryJump();
+    if (dx !== 0)       this.jackal.tryMove(dx, 0,  this.grid, this.obs);
+    else if (dy !== 0)  this.jackal.tryMove(0,  dy, this.grid, this.obs);
+    this.jackal.update(dt);
+
+    // ── Drum beat
+    this.beatTimer+=dt; this.sigAge+=dt;
+    this.drumPulse=Math.max(0, this.drumPulse-dt*3);
+    this.beatFlash=Math.max(0, this.beatFlash-dt*2.5);
+
+    if (this.beatTimer>=Game.BEAT) {
+      this.beatTimer=0; this.beatCount++;
+      this.signal=computeSignal(this.jackal.x, this.jackal.y, false);
+      this.sigAge=0; this.drumPulse=1; this.beatFlash=0.6;
+      const d=hyp(DRUM_TX-this.jackal.x, DRUM_TY-this.jackal.y);
+      if (d<Game.REVEAL+5)
+        for (let i=0;i<10;i++)
+          this.particles.push(new Particle(DRUM_TX*TILE+TILE/2, DRUM_TY*TILE+TILE/2));
+    }
+
+    this.particles=this.particles.filter(p=>{p.update(dt);return p.life>0;});
+
+    // ── Win check
+    if (this.jackal.x===DRUM_TX && this.jackal.y===DRUM_TY) {
+      this.state='eating'; this.winTimer=0;
+    }
+  }
+
+  draw() {
+    ctx.clearRect(0,0,W,H);
+
+    // ── Battlefield background (pre-rendered)
+    ctx.drawImage(this.bgCanvas, 0, 0);
+
+    // Start marker (arrow pointing right)
+    ctx.fillStyle='rgba(240,210,50,0.35)';
+    ctx.beginPath(); ctx.arc(TILE+TILE/2, TILE+TILE/2, 14, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle='rgba(240,210,50,0.7)'; ctx.font='bold 16px monospace';
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText('▶', TILE+TILE/2, TILE+TILE/2);
+
+    // ── Obstacles
+    for (let r=0;r<ROWS;r++) for (let c=0;c<COLS;c++) {
+      const o=this.obs[r][c]; if (!o) continue;
+      const px=c*TILE, py=r*TILE;
+      if (o===OBS_CHARIOT) drawChariot(px,py);
+      else if (o===OBS_BOW) drawBow(px,py);
+      else drawSword(px,py);
+    }
+
+    // ── Beat flash
+    if (this.beatFlash>0) {
+      ctx.fillStyle=`rgba(255,200,40,${this.beatFlash*0.38})`;
+      ctx.fillRect(0,0,MAP_W,MAP_H);
+    }
+
+    // ── Drum proximity aura
+    const dd=hyp(DRUM_TX-this.jackal.x, DRUM_TY-this.jackal.y);
+    if (dd<5) {
+      const alpha=(1-dd/5)*0.14;
+      const g2=ctx.createRadialGradient(
+        DRUM_TX*TILE+TILE/2,DRUM_TY*TILE+TILE/2,0,
+        DRUM_TX*TILE+TILE/2,DRUM_TY*TILE+TILE/2,TILE*3.5);
+      g2.addColorStop(0,`rgba(240,180,50,${alpha*2})`);
+      g2.addColorStop(1,'rgba(240,180,50,0)');
+      ctx.fillStyle=g2;
+      ctx.fillRect((DRUM_TX-3)*TILE,(DRUM_TY-3)*TILE,TILE*7,TILE*7);
+    }
+
+    // ── Drum (always visible)
+    drawDrum(this.drumPulse, this.state==='eating'||this.state==='won', this.winTimer);
+
+    // ── Particles & noms
+    for (const p of this.particles) p.draw();
+    for (const n of this.noms) n.draw();
+
+    // ── Jackal
+    this.jackal.draw();
+
+    // ── HUD
+    const sig=this.sigAge<3.5 ? this.signal : null;
+    drawHUD(sig, this.beatCount, this.beatTimer, Game.BEAT);
+
+    // ── Overlays
+    if (this.state==='won') drawOverlay(WIN);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  MAIN LOOP
+// ═══════════════════════════════════════════════════════════════
+let story  = new Story();
+let game   = null;
+let lastTs = 0;
+let anyKey = false;
+
+document.addEventListener('keydown', () => { anyKey = true; });
+canvas.addEventListener('click',     () => { if (!story.done) story.requestAdvance(); });
+canvas.addEventListener('touchend',  () => { if (!story.done) story.requestAdvance(); }, {passive:true});
+
+function loop(ts) {
+  const dt = Math.min((ts-lastTs)/1000, 0.05);
+  lastTs = ts;
+
+  if (!story.done) {
+    if (anyKey) { story.requestAdvance(); anyKey=false; }
+    story.update(dt);
+    story.draw();
+  } else {
+    if (!game) game = new Game();
+    if ((keys['r']||keys['R']) && game.state==='won') game=new Game();
+    game.update(dt);
+    game.draw();
+  }
+
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(ts=>{lastTs=ts; requestAnimationFrame(loop);});
+</script>
+</body>
+</html>
